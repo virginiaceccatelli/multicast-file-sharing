@@ -69,33 +69,31 @@ int main(int argc, char *argv[]) {
                 
                 }
 
-            } else if (type == 2) { // Receive data packet
-                data_packet_t *d_pkt = (data_packet_t *)buffer; 
-                // if (n < sizeof(data_packet_t)) continue; // Maybe don't do this
-
-                // if (n != sizeof(data_packet_t) + d_pkt->data_size) continue; // Maybe don't do this
-
-                if (compute_checksum(d_pkt->data, d_pkt->data_size) != d_pkt->checksum) {
-                    printf("Corrupted packet\n");
-                    // make sender resend
-                    continue;
-                }
-
-                
+            } else if (type == 2) {
+                data_packet_t *d_pkt = (data_packet_t *)buffer;
+            
                 int file_id = d_pkt->file_id;
                 int seq = d_pkt->seq_num;
-
-                // if (state[file_id]) Not initialized, ask for defn packet
-
+            
+                // GUARD: definition packet not yet received for this file
+                if (state[file_id].chunks == NULL) {
+                    printf("Data packet for file %d arrived before definition — skipping\n", file_id);
+                    continue;
+                }
+            
+                if (compute_checksum(d_pkt->data, d_pkt->data_size) != d_pkt->checksum) {
+                    printf("Corrupted packet for file %d seq %d — discarding\n", file_id, seq);
+                    continue;
+                }
+            
                 if (state[file_id].chunks[seq] == NULL) {
                     state[file_id].chunks[seq] = malloc(d_pkt->data_size);
                     memcpy(state[file_id].chunks[seq], d_pkt->data, d_pkt->data_size);
-
                     state[file_id].chunk_sizes[seq] = d_pkt->data_size;
-                    state[file_id].received_chunks++; 
-                    printf("Copied into state chunk for seq nbr: %d\n", seq);
+                    state[file_id].received_chunks++;
+                    printf("Stored chunk %d for file %d\n", seq, file_id);
                 }
-
+            
                 // check completion
                 printf("Received chunks for file %d/%d\n", state[file_id].received_chunks, state[file_id].total_chunks);
                 if (state[file_id].received_chunks == state[file_id].total_chunks) {
@@ -135,6 +133,5 @@ int main(int argc, char *argv[]) {
 
             }
         }
-    }
-    
+    } 
 }
