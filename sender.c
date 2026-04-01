@@ -14,6 +14,95 @@ unsigned int compute_checksum(char *data, int len) {
     return sum;
 }
 
+void resend_chunk(mcast_t *m,
+                           char *filename,
+                           int file_id,
+                           int seq,
+                           int chunk_size) {
+
+    FILE *file = fopen(filename, "rb");
+    if (!file) {
+        perror("fopen resend");
+        return;
+    }
+
+    // Move to correct offset
+    long offset = (long)seq * chunk_size;
+    if (fseek(file, offset, SEEK_SET) != 0) {
+        perror("fseek");
+        fclose(file);
+        return;
+    }
+
+    // Read chunk
+    char *buffer = malloc(chunk_size);
+    int bytes_read = fread(buffer, 1, chunk_size, file);
+
+    if (bytes_read <= 0) {
+        printf("Nothing to resend for seq %d\n", seq);
+        free(buffer);
+        fclose(file);
+        return;
+    }
+
+    // Create packet
+    data_packet_t *pkt =
+        malloc(sizeof(data_packet_t) + bytes_read);
+
+    pkt->packet_type = 2;
+    pkt->file_id = file_id;
+    pkt->seq_num = seq;
+    pkt->data_size = bytes_read;
+    pkt->checksum = compute_checksum(buffer, bytes_read);
+
+    memcpy(pkt->data, buffer, bytes_read);
+
+    // Send
+    multicast_send(m, pkt,
+        sizeof(data_packet_t) + bytes_read);
+
+    printf("Resent chunk %d (%d bytes)\n", seq, bytes_read);
+
+    free(pkt);
+    free(buffer);
+    fclose(file);
+}
+
+void retrans_recv(mcast_t *m, int is_awaiting_retrans, int file_id, int chunk_size) {
+    int retransmission_complete = 0;
+    while (!retransmission_complete) {
+        if (multicast_check_receive(m) > 0) {
+            char buf[MAX_PACKET_SIZE];
+            int n = multicast_receive(m, buf, sizeof(buf));
+
+            int type = *(int *)buf;
+
+            if (type == 3) { // retrans request
+                retrans_packet_t *req = (retrans_packet_t *)buf;
+
+                resend_chunk(m, req->file_id, req->seq_num, req->filename, chunk_size);
+                if (!is_awaiting_retrans) { // if is_awaiting_retrans == 0, Activates momentary polling
+                    retransmission_complete = 1;
+                }
+            } else if (type == 5) {
+                retrans_recvd_packet_t *recvd_pkt = (retrans_recvd_packet_t *)buf;
+                int revd_file_id = recvd_pkt->file_id;
+                if (file_id == revd_file_id) {
+                    retransmission_complete = 1;
+                }
+                
+                // NB Receiver may not have received all retransitted chunks.
+                // Sender will just have to listen to more retransmission requests. 
+            } else if (type == 6) {
+                // Retransmit defn_packet
+                if (!is_awaiting_retrans) { // if is_awaiting_retrans == 0, Activates momentary polling
+                    retransmission_complete = 1;
+                }
+            }
+        }
+    }
+}
+
 int main(int argc, char *argv[]) {
     mcast_t *m = multicast_init("233.3.3.3", 5001, 5002);
     int chunk_size = 512; // default
