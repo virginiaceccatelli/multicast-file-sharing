@@ -8,6 +8,7 @@ typedef struct {
     char file_name[50];
     int total_chunks;
     int chunk_size;
+    unsigned int file_checksum; // checksum  
 } file_defn_packet_t;
 
 typedef struct {
@@ -44,4 +45,5 @@ typedef struct {
     int general_chunk_size; 
     int done;
     char file_name[50];
+    unsigned int file_checksum; // checksum 
 } file_state_t;
