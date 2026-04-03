@@ -16,22 +16,19 @@ typedef struct {
 unsigned int compute_checksum(char *data, int len) {
     unsigned int sum = 0;
     for (int i = 0; i < len; i++) {
-        sum += (unsigned char)data[i];
+        sum += (unsigned char)data[i]; // add up all byte values in a buffer
     }
     return sum;
 }
 
-void resend_chunk(mcast_t *m,
-                  const char *filepath,
-                  int file_id,
-                  int seq,
-                  int chunk_size) {
+void resend_chunk(mcast_t *m, const char *filepath, int file_id, int seq, int chunk_size) {
     FILE *file = fopen(filepath, "rb");
     if (!file) {
         perror("fopen resend");
         return;
     }
 
+    // seeks to the requested chunk offset and rereads just that chunk
     long offset = (long)seq * chunk_size;
     if (fseek(file, offset, SEEK_SET) != 0) {
         perror("fseek resend");
@@ -54,6 +51,7 @@ void resend_chunk(mcast_t *m,
         return;
     }
 
+    // creates a new data packet with the same chunk data and metadata and resends it
     data_packet_t *data_pkt = malloc(sizeof(data_packet_t) + bytes_read);
     if (!data_pkt) {
         perror("malloc resend packet");
@@ -93,23 +91,20 @@ void process_retrans_requests(mcast_t *m, const char *filepath, const char *file
         int type = *(int *)buf;
 
         if (type == 3) {
-            retrans_packet_t *req = (retrans_packet_t *)buf;
-
+            retrans_packet_t *req = (retrans_packet_t *)buf; // resends the requested chunk
             if (req->file_id != file_id) {
                 printf("Ignoring retrans request for file_id=%d while handling %d\n", req->file_id, file_id);
                 continue;
             }
-
             if (req->seq_num < 0) {
                 printf("Ignoring invalid retrans request seq=%d\n", req->seq_num);
                 continue;
             }
-
             printf("Received retransmission request: file='%s' seq=%d\n", filename, req->seq_num);
-
             resend_chunk(m, filepath, file_id, req->seq_num, chunk_size);
-        } else if (type == 5) {
-            retrans_recvd_packet_t *ack = (retrans_recvd_packet_t *)buf;
+
+        } else if (type == 5) { // acknowledgment that the receiver has received all retransmissions for this file and is done with it
+            retrans_recvd_packet_t *ack = (retrans_recvd_packet_t *)buf; // retransmission complete
             printf("Received retransmission-complete packet for file_id=%d\n", ack->file_id);
             return; // stop processing retrans requests for this file (exit early)
         } else {
@@ -163,6 +158,7 @@ int main(int argc, char *argv[]) {
         struct timespec cycle_start, cycle_end;
         clock_gettime(CLOCK_MONOTONIC, &cycle_start);
 
+        // calculate file size and total chunks
         for (int i = 0; i < file_count; i++) {
             char filepath[256];
             snprintf(filepath, sizeof(filepath), "./share/%s", files[i]);
@@ -178,11 +174,10 @@ int main(int argc, char *argv[]) {
             rewind(file);
 
             int total_chunks = (int)((file_size + chunk_size - 1) / chunk_size);
-
             printf("File %d: %s (%ld bytes)\n", i, files[i], file_size);
 
+            // file definition packet 
             file_defn_packet_t def_pkt;
-
             memset(&def_pkt, 0, sizeof(def_pkt));  // zero first
             def_pkt.packet_type = 1;
             def_pkt.file_id = i;
@@ -200,9 +195,9 @@ int main(int argc, char *argv[]) {
             rewind(file);  // reset for chunk sending
             def_pkt.file_checksum = fchecksum;  
 
+            // send file definition packet
             multicast_send(m, &def_pkt, sizeof(def_pkt));
             printf("Sent definition for '%s': %d chunks\n", def_pkt.file_name, total_chunks);
-
             usleep(100000);
 
             char *buffer = malloc(chunk_size);
@@ -212,6 +207,7 @@ int main(int argc, char *argv[]) {
                 continue;
             }
 
+            // send data chunks
             int seq = 0;
             int bytes_read;
             while ((bytes_read = (int)fread(buffer, 1, chunk_size, file)) > 0) {
@@ -226,7 +222,7 @@ int main(int argc, char *argv[]) {
                 data_pkt->packet_type = 2;
                 data_pkt->data_size = bytes_read;
                 data_pkt->file_id = i;
-                data_pkt->seq_num = seq;
+                data_pkt->seq_num = seq; // tells the receiver where the chunk belongs in the file
                 data_pkt->checksum = compute_checksum(buffer, bytes_read);
                 memcpy(data_pkt->data, buffer, bytes_read);
 
@@ -238,23 +234,22 @@ int main(int argc, char *argv[]) {
 
                 free(data_pkt);
                 seq++;
-
-                usleep(20000);
+                usleep(20000); // reduce packet flooding and make reception more stable
             }
 
             free(buffer);
 
+            // send end-of-file packet
             end_packet_t end_pkt;
             end_pkt.packet_type = 4;
             end_pkt.file_id = i;
             multicast_send(m, &end_pkt, sizeof(end_pkt));
             printf("Sent end packet for '%s'\n", files[i]);
 
-            // Limited retransmission window after file transmission.
+            // waits for a limited number of polling rounds and listens for incoming packets (retransmission window)
             process_retrans_requests(m, filepath, files[i], i, chunk_size, 10); // 10 arbitrary rounds for checking retrans requests -> change?
 
             fclose(file);
-
             usleep(100000);
         }
 
